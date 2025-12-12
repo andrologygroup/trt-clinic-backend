@@ -7,6 +7,12 @@ import querystring from "querystring";
 const app = express();
 app.use(express.json());
 
+// Environment / URLs
+const HOST_URL = process.env.HOST_URL || "https://trt-clinic-backend.onrender.com";
+const REDIRECT_URI = process.env.REDIRECT_URI || `${HOST_URL}/auth/athena/callback`;
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.bigfoot-t.com";
+const PORT = process.env.PORT || 3000;
+
 // ------------------------
 // Session Setup
 // ------------------------
@@ -15,7 +21,7 @@ app.use(
     secret: process.env.SESSION_SECRET || "keyboard cat",
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false }, // Set true if serving over HTTPS with proxy
+    cookie: { secure: process.env.NODE_ENV === "production" }, // true in prod
   })
 );
 
@@ -41,7 +47,7 @@ function generateCodeChallenge(verifier) {
 // ------------------------
 app.get("/auth/athena/login", (req, res) => {
   const clientId = process.env.ATHENA_CLIENT_ID;
-  const redirectUri = "https://trt-clinic-backend.onrender.com/auth/athena/callback";
+  if (!clientId) return res.status(500).send("ATHENA_CLIENT_ID not set");
 
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -56,18 +62,14 @@ app.get("/auth/athena/login", (req, res) => {
     "profile",
     "fhirUser",
     "launch/patient",
-
-    // refresh token
     "offline_access",
-
-    // full read access to patient data
     "patient/*.read"
   ].join(" ");
 
   const params = {
     response_type: "code",
     client_id: clientId,
-    redirect_uri: redirectUri,
+    redirect_uri: REDIRECT_URI,
     scope,
     state,
     code_challenge: codeChallenge,
@@ -101,7 +103,7 @@ app.get("/auth/athena/callback", async (req, res) => {
       querystring.stringify({
         grant_type: "authorization_code",
         code: code,
-        redirect_uri: "https://trt-clinic-backend.onrender.com/auth/athena/callback",
+        redirect_uri: REDIRECT_URI,
         client_id: process.env.ATHENA_CLIENT_ID,
         code_verifier: req.session.athena_code_verifier
       }),
@@ -112,11 +114,11 @@ app.get("/auth/athena/callback", async (req, res) => {
       }
     );
 
-    // Store patient tokens in session
+    // Store patient tokens in session (or DB)
     req.session.athena_tokens = response.data;
 
-    // Redirect to your Builder.io patient portal
-    return res.redirect("https://your-builder-frontend.com/patient-portal");
+    // Redirect to your frontend patient portal
+    return res.redirect(`${FRONTEND_URL}/patient-portal`);
   } catch (err) {
     console.error("Token Exchange Error:", err.response?.data || err.message);
     return res.status(500).send("Token exchange failed");
@@ -126,6 +128,6 @@ app.get("/auth/athena/callback", async (req, res) => {
 // ------------------------
 // Start Server
 // ------------------------
-app.listen(3000, () => {
-  console.log("Athena OAuth server running on port 3000");
+app.listen(PORT, () => {
+  console.log(`Athena OAuth server running on port ${PORT} (HOST_URL=${HOST_URL})`);
 });
