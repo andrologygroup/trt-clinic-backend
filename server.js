@@ -11,17 +11,57 @@ app.use(express.json());
 const HOST_URL = process.env.HOST_URL || "https://trt-clinic-backend.onrender.com";
 const REDIRECT_URI = process.env.REDIRECT_URI || `${HOST_URL}/auth/athena/callback`;
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.bigfoot-t.com";
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+// TRUST_PROXY can be "1" or "true" (case-insensitive)
+const TRUST_PROXY = /^(1|true)$/i.test(String(process.env.TRUST_PROXY || ""));
+
+// Required secrets / IDs
+const SESSION_SECRET = process.env.SESSION_SECRET;
+const ATHENA_CLIENT_ID = process.env.ATHENA_CLIENT_ID;
+
+// Enable trust proxy when behind a proxy so req.secure and other proxy-aware features work
+if (TRUST_PROXY) {
+  // Using 1 trusts the first proxy (suitable for many PaaS setups)
+  app.set("trust proxy", 1);
+}
+
+// Validate required config early
+let failed = false;
+if (!ATHENA_CLIENT_ID) {
+  console.error(
+    "FATAL: ATHENA_CLIENT_ID is not set. Please set ATHENA_CLIENT_ID in your environment."
+  );
+  failed = true;
+}
+if (!SESSION_SECRET) {
+  console.error(
+    "FATAL: SESSION_SECRET is not set. Please set SESSION_SECRET in your environment (do not commit secrets to source control)."
+  );
+  failed = true;
+}
+if (failed) {
+  // Exit early so we don't start in a broken state
+  process.exit(1);
+}
+
+// Determine whether cookies should be marked secure.
+// Use secure cookies in production OR when behind a trusted proxy (so traffic is expected to be TLS-terminated upstream).
+const cookieSecure = NODE_ENV === "production" || TRUST_PROXY;
 
 // ------------------------
 // Session Setup
 // ------------------------
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "keyboard cat",
+    secret: SESSION_SECRET,
     resave: false,
-    saveUninitialized: true,
-    cookie: { secure: process.env.NODE_ENV === "production" }, // true in prod
+    saveUninitialized: false,
+    cookie: {
+      secure: cookieSecure,
+      sameSite: "lax",
+    },
   })
 );
 
@@ -46,8 +86,12 @@ function generateCodeChallenge(verifier) {
 // OAuth Login -> Athena
 // ------------------------
 app.get("/auth/athena/login", (req, res) => {
-  const clientId = process.env.ATHENA_CLIENT_ID;
-  if (!clientId) return res.status(500).send("ATHENA_CLIENT_ID not set");
+  const clientId = ATHENA_CLIENT_ID;
+  if (!clientId) {
+    // This should not happen because we validated at startup, but keep a defensive check.
+    console.error("ATHENA_CLIENT_ID is not set in environment");
+    return res.status(500).send("Server misconfiguration: ATHENA_CLIENT_ID not set");
+  }
 
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
@@ -104,7 +148,7 @@ app.get("/auth/athena/callback", async (req, res) => {
         grant_type: "authorization_code",
         code: code,
         redirect_uri: REDIRECT_URI,
-        client_id: process.env.ATHENA_CLIENT_ID,
+        client_id: ATHENA_CLIENT_ID,
         code_verifier: req.session.athena_code_verifier
       }),
       {
@@ -125,9 +169,24 @@ app.get("/auth/athena/callback", async (req, res) => {
   }
 });
 
+// Health check
+app.get("/health", (req, res) => res.json({ ok: true, env: NODE_ENV }));
+
 // ------------------------
 // Start Server
 // ------------------------
 app.listen(PORT, () => {
-  console.log(`Athena OAuth server running on port ${PORT} (HOST_URL=${HOST_URL})`);
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] Athena OAuth server starting`);
+  console.log(`Environment: ${NODE_ENV}`);
+  console.log(`PORT: ${PORT}`);
+  console.log(`HOST_URL: ${HOST_URL}${process.env.HOST_URL ? "" : " (default)"}`);
+  console.log(
+    `REDIRECT_URI: ${REDIRECT_URI}${process.env.REDIRECT_URI ? "" : " (derived from HOST_URL)"}`
+  );
+  console.log(`FRONTEND_URL: ${FRONTEND_URL}${process.env.FRONTEND_URL ? "" : " (default)"}`);
+  console.log(`TRUST_PROXY: ${TRUST_PROXY}`);
+  console.log(`cookie.secure: ${cookieSecure}`);
+  console.log(`ATHENA_CLIENT_ID: ${ATHENA_CLIENT_ID ? "(present)" : "(missing)"}`);
+  console.log("Server ready to accept requests.");
 });
